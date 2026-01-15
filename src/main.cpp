@@ -52,6 +52,54 @@ void eraseNfcTag() {
     }
 }
 
+// Segédfüggvény, ami minden alkalommal újra észleli a kártyát
+bool tryAuthAndWrite(int block, uint8_t* key, uint8_t* data) {
+    uint8_t uid[] = { 0, 0, 0, 0, 0, 0, 0 };
+    uint8_t uidLen;
+
+    // Kényszerített újra-észlelés (Ez az MCT titka)
+    if (!nfcDriver.readPassiveTargetID(PN532_MIFARE_ISO14443A, uid, &uidLen, 100)) return false;
+
+    // Próba Key A-val
+    if (nfcDriver.mifareclassic_AuthenticateBlock(uid, uidLen, block, 0, key)) {
+        if (nfcDriver.mifareclassic_WriteDataBlock(block, data)) return true;
+    }
+
+    // Újra-észlelés a Key B próbához
+    if (!nfcDriver.readPassiveTargetID(PN532_MIFARE_ISO14443A, uid, &uidLen, 100)) return false;
+    
+    // Próba Key B-vel
+    if (nfcDriver.mifareclassic_AuthenticateBlock(uid, uidLen, block, 1, key)) {
+        if (nfcDriver.mifareclassic_WriteDataBlock(block, data)) return true;
+    }
+
+    return false;
+}
+
+void factoryResetTag() {
+    uint8_t factoryTrailer[] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x07, 0x80, 0x69, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
+    
+    // Csak a két legvalószínűbb kulcs (Gyári és NDEF)
+    uint8_t k1[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+    uint8_t k2[] = {0xD3, 0xF7, 0xD3, 0xF7, 0xD3, 0xF7};
+
+    for (int sector = 0; sector < 16; sector++) {
+        int trailerBlock = (sector * 4) + 3;
+        bool success = false;
+
+        // PRÓBA 1: Gyári Key A és B
+        if (tryAuthAndWrite(trailerBlock, k1, factoryTrailer)) success = true;
+        
+        // PRÓBA 2: NDEF Key A és B (ha az első nem ment)
+        if (!success && tryAuthAndWrite(trailerBlock, k2, factoryTrailer)) success = true;
+
+        Serial.print(F("Szektor reset "));
+        Serial.print(sector);
+        Serial.println(success ? F(" Siker") : F(" Hiba"));
+        if (sector % 4 == 3) Serial.println();
+    }
+}
+
 void setup() {
   Serial.begin(115200);
   while (!Serial){}
@@ -70,7 +118,11 @@ char cmd;
 
 void loop() {
     if (Serial.available() > 0) {
-        cmd = Serial.read();
+        char c = Serial.read();
+        if (c == '\n' || c == '\r') {
+            return;
+        }
+        cmd = c;
         Serial.print("Parancs beolvasva: ");
         Serial.println(cmd);      
     }
@@ -91,6 +143,10 @@ void loop() {
             case 'r':
                 Serial.println("Olvasás indítása...");
                 readTag();
+                break;
+            case 'x':
+                Serial.println("Factory Reset indítása...");
+                factoryResetTag();
                 break;
             default:
                 Serial.println("Olvasás indítása...");
